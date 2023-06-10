@@ -66,6 +66,12 @@ for i in range(5):
   for j in range(5):
     tiles[i][j] = board[(t_length*i+CROP_DIST):(t_length*(i+1)-CROP_DIST), (t_width*j+CROP_DIST):(t_width*(j+1)-CROP_DIST)]
 
+# for i in range(1,5):
+#   board = cv2.line(board, (t_width*i,0), (t_width*i,t_length*5), (0,255,0), 3)
+# for j in range(1,5):
+#   board = cv2.line(board, (0,t_length*j), (t_width*5,t_length*j), (0,255,0), 3)
+# cv2.imshow("board_with_lines", board)
+
 
 #################################################
 # For each tile, run SIFT and determine letter! #
