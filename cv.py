@@ -2,29 +2,27 @@
 # uses computer vision methods to determine the letters!
 
 from imutils.perspective import four_point_transform
-from skimage.segmentation import clear_border
 import numpy as np
-import imutils
 import cv2
+from helper_functions import find_averages_of_groups
 
 BOARD_SIZE = 5
 
 
-########################
-# Get and resize image #
-########################
+############################################
+# Get and resize image to lower resolution #
+############################################
 
-orig = cv2.imread("demo.png")
+orig = cv2.imread("raw_data/IMG_5572.jpg")
 scale_percent = 20 # percent of original size
 width = int(orig.shape[1] * scale_percent / 100)
 height = int(orig.shape[0] * scale_percent / 100)
-dim = (width, height)
-img = cv2.resize(orig, dim, interpolation = cv2.INTER_AREA)
+img = cv2.resize(orig, (width, height), interpolation = cv2.INTER_AREA)
 
 
-#########################
-# Get location of board #
-#########################
+########################################
+# Get location of board and crop/scale #
+########################################
 
 hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 # Threshold of purple boggle board in HSV space
@@ -45,163 +43,70 @@ for c in contours:
     break
 
 board = four_point_transform(img, boardCnt.reshape(4,2))
-board = board[20:board.shape[0]-20, 20:board.shape[1]-20]
+
+
+#########################################
+# Put into black/white and filter image #
+#########################################
+
 board = cv2.cvtColor(board, cv2.COLOR_BGR2GRAY)
-ret, board = cv2.threshold(board, 140, 255, cv2.THRESH_BINARY)
+ret, board = cv2.threshold(board, 120, 255, cv2.THRESH_BINARY)
 
-cv2.imshow("board_crop_thresh", board)
+contours, _ = cv2.findContours(board, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+mask = np.zeros_like(board)
+cv2.drawContours(mask, contours, -1, (255, 255, 255), thickness=cv2.FILLED)
+board_pre_morph = cv2.bitwise_or(cv2.bitwise_not(mask), board)
+cv2.imshow("board_pre_morph", board_pre_morph)
+
+# Perform morphological opening (erodes small black areas and dilates)
+board_inverse = cv2.bitwise_not(board_pre_morph)
+kernel = np.ones((3, 3),np.uint8) * 255
+board_morphed = cv2.morphologyEx(board_inverse, cv2.MORPH_OPEN, kernel)
+board_final = cv2.bitwise_not(board_morphed)
+
+cv2.imshow("board_final", board_final)
 
 
-#######################
-# Separate into tiles #
-#######################
+#########################################
+# Split into 25 separate images #
+#########################################
 
-t_length = int(board.shape[0]/BOARD_SIZE)
-t_width = int(board.shape[1]/BOARD_SIZE)
-tiles = [[None for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
+# Detect horizontal and vertical white lines (where pixel value is 255)
+horizontal_lines = [y for y in range(board_final.shape[0]) if np.all(board_final[y, :] == 255)]
 
-CROP_DIST = 0
-for i in range(1):
-  for j in range(1):
-    tile = board[(t_length*i+CROP_DIST):(t_length*(i+1)-CROP_DIST), (t_width*j+CROP_DIST):(t_width*(j+1)-CROP_DIST)]
+# Detect vertical lines: where each column is entirely white (255)
+vertical_lines = [x for x in range(board_final.shape[1]) if np.all(board_final[:, x] == 255)]
+
+horizontal_boundaries = find_averages_of_groups(horizontal_lines)
+vertical_boundaries = find_averages_of_groups(vertical_lines)
+
+cv2.imshow("board_final", board_final)
+
+# Now slice the image into 25 smaller images (5x5 grid)
+sub_images = []
+
+for i in range(5):
+    for j in range(5):
+        # Slice the image using the calculated boundaries
+        x1, x2 = vertical_boundaries[j], vertical_boundaries[j + 1]
+        y1, y2 = horizontal_boundaries[i], horizontal_boundaries[i + 1]
+        
+        sub_image = board_final[y1:y2, x1:x2]
+
+
+        non_white_pixels = np.where(sub_image == 0)
+        # Get the min and max x and y coordinates that contain the black pixels
+        min_x = np.min(non_white_pixels[1])
+        max_x = np.max(non_white_pixels[1])
+        min_y = np.min(non_white_pixels[0])
+        max_y = np.max(non_white_pixels[0])
+
+        # Step 3: Crop the image using the bounding box
+        cropped_image = sub_image[min_y:max_y+1, min_x:max_x+1]
+
+        sub_images.append(cropped_image)            
+        # Optionally, save each sub-image as a file
+        cv2.imshow(f"sub_image_{i}_{j}.png", cropped_image)
     
-    # Remove black on outside
-    contours, _ = cv2.findContours(tile, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    mask = np.zeros_like(tile)
-    cv2.drawContours(mask, contours, -1, (255, 255, 255), thickness=cv2.FILLED)
-    tile = cv2.bitwise_or(cv2.bitwise_not(mask), tile)
-
-    y_nonzero, x_nonzero = np.nonzero(255 - tile)
-    # tile = tile[np.min(y_nonzero)-5:np.max(y_nonzero)+5, np.min(x_nonzero)-5:np.max(x_nonzero)+5]
-    tile = tile[np.min(y_nonzero):np.max(y_nonzero), np.min(x_nonzero):np.max(x_nonzero)]
-
-    tiles[i][j] = tile
-    cv2.imshow(f"post{i}{j}", tile)
-    
-
-################################
-# Prepare image of each letter #
-################################
-
-letters = [None]*(26*4)
-
-for i in range(26):  
-  letter_image = cv2.imread(f'letters/{chr(ord("a") + i)}.jpg', 0)
-
-  ret, letter_image = cv2.threshold(letter_image, 150, 255, cv2.THRESH_BINARY)
-
-  # Fill in black area outside
-  contours, _ = cv2.findContours(letter_image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-  mask = np.zeros_like(letter_image)
-  cv2.drawContours(mask, contours, -1, (255, 255, 255), thickness=cv2.FILLED)
-  letter_image = cv2.bitwise_or(cv2.bitwise_not(mask), letter_image)
-
-  # Crop
-  y_nonzero, x_nonzero = np.nonzero(255 - letter_image)
-  letter_image = letter_image[np.min(y_nonzero):np.max(y_nonzero), np.min(x_nonzero):np.max(x_nonzero)]
-
-  # For each rotation
-  for j in range(4):
-
-    letter_image = cv2.rotate(letter_image, cv2.ROTATE_90_CLOCKWISE)
-
-    # Resize
-    scale = letter_image.shape[1] / t_width
-    letter_width = int(letter_image.shape[1] / scale)
-    letter_height = int(letter_image.shape[0] / scale)
-    letter_dim = (letter_width, letter_height)
-    letter_image = cv2.resize(letter_image, letter_dim, interpolation = cv2.INTER_AREA)
-
-    letters[i*4 + j] = letter_image
-
-    if i == 8:
-      cv2.imshow(f"letterimage{i}{j}", letter_image)
-
-  # keypoints, descriptors = sift.detectAndCompute(letter_image, None)
-  # letter_images.append(letter_image)
-  # letter_kp.append(keypoints)
-  # letter_descriptors.append(descriptors)
-
-
-##################################################
-# Overlay images and compare how well they match #
-##################################################
-correct_letters = ['n', 'm', 'o', 'j', 'r', 's', 'e', 'e', 'j', 's', 'n', 'a', 'g', 'm', 'o', 'd', 'e', 'a', 'm', 'h', 'r', 'e', 'b', 'r', 't']
-total_score = 0
-
-for i in range(1):
-  for j in range(1):
-    best_score = 0
-    best_letter = None
-
-    for index, letter in enumerate(letters):
-
-      #TODO: Move sizing into here so it sizes to each letter right before comparison
-
-      resized_letter = cv2.resize(letter, (tiles[i][j].shape[1], tiles[i][j].shape[0]))
-      total_matches = np.count_nonzero((resized_letter == 0) & (tiles[i][j] == 0))
-      total_black_pixels = max(np.count_nonzero(tiles[i][j] == 0), np.count_nonzero(resized_letter == 0))
-      score = total_matches / total_black_pixels
-      if score > best_score:
-        best_score = score
-        best_letter = chr(ord('a') + index//4)
-    print(best_letter, best_score)
-    if best_letter == correct_letters[i*BOARD_SIZE+j]:
-      total_score += 1
-
-
-print(total_score)
-
-
 cv2.waitKey(0)
 cv2.destroyAllWindows()
-
-
-
-# OLD:
-#################################################
-# For each tile, run SIFT and determine letter! #
-#################################################
-
-# for x in range(2):
-#   for y in range(2):
-
-#     # gray = cv2.cvtColor(tiles[x][y], cv2.COLOR_BGR2GRAY)
-#     gray = tiles[x][y]
-
-#     sift = cv2.SIFT_create()
-#     kp, tile_descriptors = sift.detectAndCompute(gray,None)
-#     kpimg = cv2.drawKeypoints(gray,kp,img)
-#     cv2.imshow(f"kpimg{x}{y}", kpimg)
-
-#     matcher = cv2.BFMatcher()
-
-#     letter_images = []
-#     letter_kp = []
-#     letter_descriptors = []
-
-#     best_match_index = -1
-#     best_match_count = 0
-
-#     for i, descriptors in enumerate(letter_descriptors):
-#       matches = matcher.knnMatch(descriptors, tile_descriptors, k=2)
-
-#       # Apply ratio test to filter good matches
-#       good_matches = []
-#       for m, n in matches:
-#         if m.distance < 0.7 * n.distance:
-#           good_matches.append(m)
-
-#       if len(good_matches) > best_match_count:
-#         best_match_index = i
-#         best_match_count = len(good_matches)
-
-#       # All 26 letters
-#       if i  in [12, 13, 18, 4]:
-#         kpimg2 = cv2.drawKeypoints(letter_images[i],letter_kp[i],img)
-#         cv2.imshow(f"letter {i}", kpimg2)  
-
-#     print(f"The matched object is {chr(ord('a') + best_match_index)}")
-#     if (chr(ord('a') + best_match_index)) == correct_letters[x*BOARD_SIZE+y]:
-#       score += 1
-
